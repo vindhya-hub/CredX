@@ -62,7 +62,8 @@ const INTENT_RULES = [
   [INTENTS.CARD_INFO, /\bcard balance\b/, 4],
   [INTENTS.CARD_INFO, /\b(card )?bills?\b/, 2],
   [INTENTS.CARD_INFO, /\b(due|owe)\b/, 2],
-  [INTENTS.CARD_INFO, /\b(my|all|which) cards\b|\bcards? (status|details)\b|\bhow many cards\b/, 3],
+  // "what cards do I have", "list my cards" - unless the question is about their transactions.
+  [INTENTS.CARD_INFO, /^(?!.*\b(transactions?|purchases?|spen[dt]|spending|charges?)\b).*(\b(my|all|which|what) cards\b|\bcards? (status|details)\b|\bhow many cards\b|\bcards do i have\b)/, 3],
   [INTENTS.CARD_INFO, /\b(frozen|freeze|expir\w*)\b/, 2],
   [INTENTS.CARD_INFO, /\b(credit|debit) cards?\b/, 1],
 
@@ -187,7 +188,10 @@ function detectMerchants(q, merchants = []) {
     const [first] = tokenize(name);
     if (first && first.length >= 3 && queryTokens.has(first)) partial.push(merchant);
   }
-  return full.length ? full : partial;
+  if (!full.length) return partial;
+  // "uber eats" names Uber Eats, not also Uber: drop names contained in a longer match.
+  const key = (m) => ` ${normalize(m).replace(/[^a-z0-9]+/g, ' ').trim()} `;
+  return full.filter((m) => !full.some((other) => key(other).length > key(m).length && key(other).includes(key(m))));
 }
 
 function detectCard(q) {
@@ -216,7 +220,8 @@ function detectAmounts(q) {
 function detectLimit(q) {
   const nouns = '(?:card )?(?:transactions?|purchases?|payments?|transfers?|charges?|records?|items?|entries)';
   const m =
-    q.match(new RegExp(`\\b(?:last|latest|recent|top|first|newest|previous)\\s+(\\d{1,2})\\b(?:\\s+(?:most\\s+)?(?:recent\\s+)?${nouns})?`)) ||
+    // "last 3 transactions" / "top 5", but not "last 3 months" (a time range).
+    q.match(/\b(?:last|latest|recent|top|first|newest|previous)\s+(\d{1,2})\b(?!\s+(?:days?|weeks?|months?|years?)\b)/) ||
     q.match(new RegExp(`\\b(\\d{1,2})\\s+(?:most recent|latest|recent|last|newest)?\\s*${nouns}`));
   if (!m) return null;
   const n = Number(m[1]);

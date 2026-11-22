@@ -113,10 +113,14 @@ async function rotateRefreshToken(token) {
     if (!session) return { error: invalidRefresh() };
 
     if (session.revokedAt) {
-      if (Date.now() - session.revokedAt.getTime() <= REUSE_GRACE_MS && session.replacedById) {
+      // Revoked by logout / password change (not by rotation): just refuse it.
+      // Another device holding a stale token must not wipe the new sessions.
+      if (!session.replacedById) return { error: invalidRefresh('Refresh token has been revoked') };
+      if (Date.now() - session.revokedAt.getTime() <= REUSE_GRACE_MS) {
         // Concurrent refresh from another tab: reject this one, keep the sessions.
         return { error: invalidRefresh('Refresh token already used') };
       }
+      // An already-rotated token presented again: treat as theft of the token family.
       await revokeAllSessions(payload.sub, { transaction: t });
       await User.increment('tokenVersion', { where: { id: payload.sub }, transaction: t });
       logger.warn('Refresh token reuse detected; all sessions revoked', { userId: payload.sub });
