@@ -1,20 +1,25 @@
 const express = require('express');
-const router = express.Router();
 const cardController = require('./card.controller');
+const schemas = require('./card.validation');
 const authMiddleware = require('../../middlewares/auth.middleware');
+const validate = require('../../middlewares/validate.middleware');
 
+const router = express.Router();
 
-router.delete('/:cardId', authMiddleware, cardController.deleteCard);
-router.post('/create', authMiddleware, cardController.createCard);
-router.post('/spend', authMiddleware, cardController.spend);
-router.post('/toggle-freeze', authMiddleware, cardController.toggleFreeze);
-router.post('/simulate', authMiddleware, cardController.simulateTransactions);
-router.post('/pay-bill', authMiddleware, cardController.payCreditBill); // ✅ THIS MUST EXIST
-router.get('/', authMiddleware, cardController.getUserCards);
-router.get('/:cardId/transactions', authMiddleware, cardController.getCardTransactions);
-router.get('/spendings', authMiddleware, cardController.getUserSpendings);
-router.get("/analytics", authMiddleware, cardController.getSpendingAnalytics);
-router.get("/analytics/categories", authMiddleware, cardController.getCategoryAnalytics);
-router.get("/:id", authMiddleware, cardController.getCardById);
+router.use(authMiddleware);
+
+router.post('/create', validate({ body: schemas.createCard }), cardController.createCard);
+router.post('/spend', validate({ body: schemas.spend }), cardController.spend);
+router.post('/pay-bill', validate({ body: schemas.payBill }), cardController.payCreditBill);
+router.post('/toggle-freeze', validate({ body: schemas.toggleFreeze }), cardController.toggleFreeze);
+router.post('/simulate', validate({ body: schemas.simulate }), cardController.simulateTransactions);
+
+router.get('/', cardController.getUserCards);
+router.get('/spendings', validate({ query: schemas.listQuery }), cardController.getUserSpendings);
+router.get('/analytics', cardController.getSpendingAnalytics);
+router.get('/analytics/categories', validate({ query: schemas.categoryAnalyticsQuery }), cardController.getCategoryAnalytics);
+router.get('/:cardId/transactions', validate({ params: schemas.cardIdParam, query: schemas.listQuery }), cardController.getCardTransactions);
+router.get('/:id', validate({ params: schemas.idParam }), cardController.getCardById);
+router.delete('/:cardId', validate({ params: schemas.cardIdParam }), cardController.deleteCard);
 
 module.exports = router;

@@ -1,431 +1,303 @@
-const { Op } = require('sequelize');
-const Card = require('./card.model');
-const User = require('../users/user.model');
-const Wallet = require('../wallet/wallet.model');
-const CardTransaction = require('./cardTransaction.model');
-const generateCardNumber = require('../../utils/cardGenerator');
-const { generateCVV, generateExpiry, maskCard } = require('../../utils/cardDetailsGenerator');
-const { sequelize } = require("../../config/db");
+const { Op, fn, col, literal } = require('sequelize');
+const AppError = require('../../utils/AppError');
+const { round2, toNumber } = require('../../utils/money');
+const { evaluateTransaction } = require('../../utils/fraudEngine');
+const { categorizeMerchant } = require('../../utils/categorizer');
+const { maskPan, lastFour, detectBrand, fingerprint } = require('../../utils/cardUtils');
+const { sequelize, User, Card, CardTransaction } = require('../../models');
+const { creditLimitFor } = require('../../utils/creditPolicy');
+const walletService = require('../wallet/wallet.service');
 
-exports.getSpendingAnalytics = async (req, res) => {
-  try {
-    const userId = req.user.id;
+/** Ids of the cards owned by the user (every card query is scoped through this). */
+async function ownedCardIds(userId) {
+  const cards = await Card.findAll({ where: { userId }, attributes: ['id'], raw: true });
+  return cards.map((c) => c.id);
+}
 
-    const result = await sequelize.query(
-      `
-      SELECT 
-        DATE_FORMAT(ct.createdAt, '%Y-%m') AS month,
-        SUM(ct.amount) AS totalSpent,
-        COUNT(ct.id) AS totalTransactions,
-        AVG(ct.amount) AS avgTransaction,
-        SUM(CASE WHEN ct.isFraud = true THEN 1 ELSE 0 END) AS fraudCount
-      FROM CardTransactions ct
-      INNER JOIN Cards c ON ct.cardId = c.id
-      WHERE c.userId = :userId
-      GROUP BY month
-      ORDER BY month ASC
-      `,
-      {
-        replacements: { userId },
-        type: sequelize.QueryTypes.SELECT
-      }
-    );
+async function findOwnedCard(cardId, userId) {
+  const card = await Card.findOne({ where: { id: cardId, userId } });
+  if (!card) throw AppError.notFound('Card not found', 'CARD_NOT_FOUND');
+  return card;
+}
 
-    res.json(result);
+const monthExpression = () =>
+  sequelize.getDialect() === 'postgres'
+    ? fn('to_char', fn('date_trunc', 'month', col('createdAt')), 'YYYY-MM')
+    : fn('strftime', '%Y-%m', col('createdAt'));
 
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-exports.getCategoryAnalytics = async (req, res) => {
-  try {
-    const userId = req.user.id;
+// Purchases that count as spending: approved and not a wallet top-up.
+const spendingWhere = (cardIds) => ({
+  cardId: cardIds,
+  status: 'approved',
+  category: { [Op.or]: [{ [Op.ne]: 'wallet_topup' }, { [Op.is]: null }] },
+});
 
-    const result = await sequelize.query(
-      `
-      SELECT 
-        ct.merchant,
-        SUM(ct.amount) AS totalSpent
-      FROM CardTransactions ct
-      INNER JOIN Cards c ON ct.cardId = c.id
-      WHERE c.userId = :userId
-      GROUP BY ct.merchant
-      ORDER BY totalSpent DESC
-      `,
-      {
-        replacements: { userId },
-        type: sequelize.QueryTypes.SELECT
-      }
-    );
-
-    res.json(result);
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
-// ================= CREATE CARD =================
 // ================= CREATE CARD =================
 exports.createCard = async (req, res) => {
-  try {
-    const { type, cardNumber, cvv, expiryDate, name } = req.body;
-    const userId = req.user.id;
+  const { type, name, cardNumber, expiryDate } = req.body; // CVV validated by the schema, never stored
+  const userId = req.user.id;
 
-    if (!cardNumber || !cvv || !expiryDate || !name) {
-      return res.status(400).json({
-        message: "All card details are required"
-      });
-    }
+  const user = await User.findByPk(userId);
+  if (!user) throw AppError.notFound('User not found');
 
-    if (cardNumber.length !== 16) {
-      return res.status(400).json({
-        message: "Invalid card number"
-      });
-    }
+  const cardFingerprint = fingerprint(cardNumber);
+  const duplicate = await Card.findOne({ where: { userId, fingerprint: cardFingerprint }, attributes: ['id'] });
+  if (duplicate) throw AppError.conflict('This card has already been added', 'DUPLICATE_CARD');
 
-    if (cvv.length < 3 || cvv.length > 4) {
-      return res.status(400).json({
-        message: "Invalid CVV"
-      });
-    }
+  const creditLimit = type === 'credit' ? creditLimitFor(user.credit_score) : 0;
 
-    const user = await User.findByPk(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+  const card = await Card.create({
+    userId,
+    maskedNumber: maskPan(cardNumber),
+    last4: lastFour(cardNumber),
+    brand: detectBrand(cardNumber),
+    fingerprint: cardFingerprint,
+    cardHolderName: name,
+    expiryDate,
+    cardType: type,
+    creditLimit,
+    availableCredit: creditLimit,
+    outstandingBalance: 0,
+    minimumDue: 0,
+    status: 'active',
+  });
 
-    let creditLimit = 0;
-
-    // ✅ FIXED LOGIC — NO DENIAL
-    if (type === 'credit') {
-      // Credit limit depends on score but does NOT deny
-      if (user.credit_score >= 750) {
-        creditLimit = 200000;
-      } else if (user.credit_score >= 650) {
-        creditLimit = 100000;
-      } else if (user.credit_score >= 550) {
-        creditLimit = 50000;
-      } else {
-        creditLimit = 25000; // low score still gets card
-      }
-    }
-
-    const card = await Card.create({
-      userId,
-      cardNumber,
-      maskedNumber: maskCard(cardNumber),
-      cvv,
-      expiryDate,
-      cardHolderName: name,
-      cardType: type,
-      creditLimit,
-      availableCredit: creditLimit,
-      outstandingBalance: 0,
-      minimumDue: 0,
-      status: "active"
-    });
-
-    res.json({
-      message: "Card created successfully",
-      card
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  res.status(201).json({ message: 'Card created successfully', card });
 };
 
 // ================= SPEND (WITH FRAUD ENGINE) =================
+// Fraud is evaluated before any money moves. A flagged purchase is declined
+// (recorded with status "declined") and the card is frozen; otherwise the
+// wallet (debit) or available credit (credit) is charged atomically.
 exports.spend = async (req, res) => {
-  try {
-    const { cardId, amount } = req.body;
-    const userId = req.user.id;
+  const { cardId, amount, merchant, category } = req.body;
+  const userId = req.user.id;
 
-    const card = await Card.findOne({ where: { id: cardId, userId } });
-    if (!card) return res.status(404).json({ message: "Card not found" });
+  const result = await sequelize.transaction(async (t) => {
+    const wallet = await walletService.lockWallet(userId, t);
+    const card = await Card.findOne({ where: { id: cardId, userId }, transaction: t, lock: t.LOCK.UPDATE });
+    if (!card) throw AppError.notFound('Card not found', 'CARD_NOT_FOUND');
+    if (card.status !== 'active') throw AppError.badRequest('Card is frozen', 'CARD_FROZEN');
 
-    if (card.status !== 'active') {
-      return res.status(400).json({ message: "Card is frozen" });
-    }
+    const [recent, recentCountLastMinute] = await Promise.all([
+      CardTransaction.findAll({
+        attributes: ['amount'],
+        where: { cardId, status: 'approved' },
+        order: [['createdAt', 'DESC']],
+        limit: 10,
+        transaction: t,
+      }),
+      CardTransaction.count({ where: { cardId, createdAt: { [Op.gt]: new Date(Date.now() - 60000) } }, transaction: t }),
+    ]);
 
-    // Debit Logic
-    if (card.cardType === 'debit') {
-      const wallet = await Wallet.findOne({ where: { userId } });
-      if (wallet.balance < amount) {
-        return res.status(400).json({ message: "Insufficient wallet balance" });
-      }
-      wallet.balance -= amount;
-      await wallet.save();
-    }
-
-    // Credit Logic
-    if (card.cardType === 'credit') {
-      if (card.availableCredit < amount) {
-        return res.status(400).json({ message: "Credit limit exceeded" });
-      }
-      card.availableCredit -= amount;
-      card.outstandingBalance += amount;
-      card.minimumDue = parseFloat((card.outstandingBalance * 0.05).toFixed(2));
-      await card.save();
-    }
-
-    // ================= FRAUD DETECTION =================
-    const recentTransactions = await CardTransaction.findAll({
-      where: { cardId },
-      order: [['createdAt', 'DESC']],
-      limit: 10
-    });
-
-    const avgSpend = recentTransactions.length
-      ? recentTransactions.reduce((sum, t) => sum + t.amount, 0) /
-        recentTransactions.length
-      : amount;
-
-    let fraudScore = 0;
-
-    if (amount > avgSpend * 3) fraudScore += 0.4;
-    if (amount > 5000) fraudScore += 0.3;
-
-    const oneMinuteAgo = new Date(Date.now() - 60000);
-    const rapidTx = await CardTransaction.count({
-      where: {
-        cardId,
-        createdAt: { [Op.gt]: oneMinuteAgo }
-      }
-    });
-
-    if (rapidTx > 5) fraudScore += 0.4;
-
-    const isFraud = fraudScore > 0.7;
-
-    if (isFraud) {
-      card.status = 'frozen';
-      await card.save();
-    }
-
-    await CardTransaction.create({
-      cardId,
+    const verdict = evaluateTransaction({
       amount,
-      merchant: "Simulated Merchant",
-      fraudScore,
-      isFraud
+      recentAmounts: recent.map((r) => r.amount),
+      recentCountLastMinute,
     });
+    const resolvedCategory = category || categorizeMerchant(merchant);
 
-    res.json({
-      message: "Transaction successful",
-      fraudScore,
-      isFraud
+    if (verdict.isFraud) {
+      card.status = 'frozen';
+      await card.save({ transaction: t });
+      const declined = await CardTransaction.create({
+        cardId, amount, merchant, category: resolvedCategory, status: 'declined', fraudScore: verdict.score, isFraud: true,
+      }, { transaction: t });
+      return { declined: true, verdict, transaction: declined };
+    }
+
+    if (card.cardType === 'debit') {
+      if (wallet.balance < amount) throw AppError.badRequest('Insufficient wallet balance', 'INSUFFICIENT_FUNDS');
+      wallet.balance = round2(wallet.balance - amount);
+      await wallet.save({ transaction: t });
+    } else {
+      if (card.availableCredit < amount) throw AppError.badRequest('Credit limit exceeded', 'CREDIT_LIMIT_EXCEEDED');
+      card.availableCredit = round2(card.availableCredit - amount);
+      card.outstandingBalance = round2(card.outstandingBalance + amount);
+      card.minimumDue = walletService.minimumDueFor(card.outstandingBalance);
+      await card.save({ transaction: t });
+    }
+
+    const approved = await CardTransaction.create({
+      cardId, amount, merchant, category: resolvedCategory, status: 'approved', fraudScore: verdict.score, isFraud: false,
+    }, { transaction: t });
+
+    return { declined: false, verdict, transaction: approved, card, wallet };
+  });
+
+  if (result.declined) {
+    // The decline and the card freeze are committed; report it to the client.
+    return res.status(402).json({
+      message: 'Transaction declined: flagged as potential fraud. The card has been frozen.',
+      code: 'TRANSACTION_DECLINED',
+      fraudScore: result.verdict.score,
+      isFraud: true,
+      reasons: result.verdict.reasons,
+      transaction: result.transaction,
     });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
+
+  return res.json({
+    message: 'Transaction successful',
+    fraudScore: result.verdict.score,
+    isFraud: false,
+    transaction: result.transaction,
+    card: result.card,
+    walletBalance: result.wallet.balance,
+  });
 };
 
-
-// ================= PAY CREDIT BILL =================
+// ================= PAY CREDIT CARD BILL FROM WALLET =================
 exports.payCreditBill = async (req, res) => {
-  try {
-    const { cardId, amount } = req.body;
-
-    const card = await Card.findOne({
-      where: { id: cardId, userId: req.user.id }
-    });
-
-    if (!card) {
-      return res.status(404).json({ message: "Credit card not found" });
-    }
-
-    if (card.cardType !== 'credit') {
-      return res.status(400).json({ message: "Not a credit card" });
-    }
-
-    card.availableCredit += amount;
-
-    if (card.availableCredit > card.creditLimit) {
-      card.availableCredit = card.creditLimit;
-    }
-
-    await card.save();
-
-    res.json({ message: "Bill paid successfully" });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  const { cardId, amount } = req.body;
+  const { card, wallet, transaction } = await walletService.payCardBill({ userId: req.user.id, cardId, amount });
+  res.json({
+    message: 'Bill paid successfully',
+    card,
+    walletBalance: wallet.balance,
+    transaction,
+  });
 };
+
 // ================= GET USER CARDS =================
 exports.getUserCards = async (req, res) => {
-  try {
-    const cards = await Card.findAll({
-      where: { userId: req.user.id },
-      attributes: {
-        exclude: ['cardNumber', 'cvv']
-      }
-    });
-
-    res.json(cards);
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  const cards = await Card.findAll({ where: { userId: req.user.id }, order: [['createdAt', 'ASC']] });
+  res.json(cards);
 };
-// ================= GET USER CARDS =================
-exports.getUserCards = async (req, res) => {
-  try {
-    const cards = await Card.findAll({
-      where: { userId: req.user.id },
-      attributes: { exclude: ['cardNumber', 'cvv'] }
-    });
 
-    res.json(cards);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+// ================= GET CARD BY ID =================
+exports.getCardById = async (req, res) => {
+  const card = await findOwnedCard(req.validated.params.id, req.user.id);
+  res.json(card);
 };
+
 // ================= TOGGLE FREEZE =================
 exports.toggleFreeze = async (req, res) => {
-  try {
-    const { cardId } = req.body;
-
-    const card = await Card.findOne({
-      where: { id: cardId, userId: req.user.id }
-    });
-
-    if (!card) return res.status(404).json({ message: "Card not found" });
-
-    card.status = card.status === "active" ? "frozen" : "active";
-    await card.save();
-
-    res.json({ status: card.status });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  const card = await findOwnedCard(req.body.cardId, req.user.id);
+  card.status = card.status === 'active' ? 'frozen' : 'active';
+  await card.save();
+  res.json({ status: card.status });
 };
+
 // ================= SIMULATE TRANSACTIONS =================
+// Generates historical demo purchases spread over the last `daysBack` days.
+// These are sample data only: balances are not changed.
+const DEMO_MERCHANTS = [
+  ['Swiggy', 'food'], ['Zomato', 'food'], ['Starbucks', 'food'], ["Domino's Pizza", 'food'],
+  ['Amazon', 'shopping'], ['Flipkart', 'shopping'], ['Myntra', 'shopping'],
+  ['Uber', 'transport'], ['Ola', 'transport'],
+  ['Netflix', 'entertainment'], ['BookMyShow', 'entertainment'], ['Spotify', 'entertainment'],
+  ['Apple', 'electronics'], ['BigBasket', 'groceries'], ['Walmart', 'groceries'],
+  ['Shell', 'fuel'], ['IndiGo', 'travel'], ['Airtel', 'utilities'], ['Apollo Pharmacy', 'health'],
+];
+
 exports.simulateTransactions = async (req, res) => {
-  try {
-    const { cardId, count } = req.body;
+  const { cardId, count, daysBack } = req.body;
+  await findOwnedCard(cardId, req.user.id);
 
-    const merchants = ["Amazon", "Uber", "Netflix", "Apple", "Walmart"];
+  const now = Date.now();
+  const rows = Array.from({ length: count }, () => {
+    const [merchant, category] = DEMO_MERCHANTS[Math.floor(Math.random() * DEMO_MERCHANTS.length)];
+    const createdAt = new Date(now - Math.floor(Math.random() * daysBack * 24 * 60 * 60 * 1000));
+    return {
+      cardId,
+      amount: Math.floor(Math.random() * 1000) + 100,
+      merchant,
+      category,
+      status: 'approved',
+      fraudScore: 0,
+      isFraud: false,
+      createdAt,
+      updatedAt: createdAt,
+    };
+  });
 
-    for (let i = 0; i < count; i++) {
-      await CardTransaction.create({
-        cardId,
-        amount: Math.floor(Math.random() * 1000) + 100,
-        merchant: merchants[Math.floor(Math.random() * merchants.length)],
-        fraudScore: 0,
-        isFraud: false
-      });
-    }
-
-    res.json({ message: "Simulation complete" });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  await CardTransaction.bulkCreate(rows); // one INSERT instead of `count` round trips
+  res.status(201).json({ message: 'Simulation complete', created: rows.length });
 };
 
+// ================= CARD TRANSACTIONS =================
 exports.getCardTransactions = async (req, res) => {
-  try {
-    const { cardId } = req.params;
+  const { cardId } = req.validated.params;
+  const { limit, offset } = req.validated.query;
+  await findOwnedCard(cardId, req.user.id); // ownership check (prevents reading other users' cards)
 
-    const transactions = await CardTransaction.findAll({
-      where: { cardId },
-      order: [['createdAt', 'DESC']]
-    });
-
-    res.json(transactions);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  const transactions = await CardTransaction.findAll({
+    where: { cardId },
+    order: [['createdAt', 'DESC']],
+    limit,
+    offset,
+  });
+  res.json(transactions);
 };
+
 // ================= DELETE CARD =================
 exports.deleteCard = async (req, res) => {
-  try {
-    const { cardId } = req.params;
-
-    const card = await Card.findOne({
-      where: { id: cardId, userId: req.user.id }
-    });
-
-    if (!card) {
-      return res.status(404).json({ message: "Card not found" });
-    }
-
-    await card.destroy();
-
-    res.json({ message: "Card deleted successfully" });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  const card = await findOwnedCard(req.validated.params.cardId, req.user.id);
+  if (card.cardType === 'credit' && card.outstandingBalance > 0) {
+    throw AppError.badRequest('Pay the outstanding balance before removing this card', 'OUTSTANDING_BALANCE');
   }
+  await card.destroy();
+  res.json({ message: 'Card deleted successfully' });
 };
+
+// ================= SPENDINGS =================
 exports.getUserSpendings = async (req, res) => {
-  try {
-    const transactions = await CardTransaction.findAll({
-      include: {
-        model: Card,
-        where: { userId: req.user.id }
-      },
-      order: [['createdAt', 'DESC']]
-    });
+  const { limit, offset } = req.validated.query;
+  const cardIds = await ownedCardIds(req.user.id);
+  if (!cardIds.length) return res.json({ totalSpent: 0, transactions: [] });
 
-    const totalSpent = transactions.reduce((sum, t) => sum + t.amount, 0);
+  const [totalSpent, transactions] = await Promise.all([
+    CardTransaction.sum('amount', { where: spendingWhere(cardIds) }),
+    CardTransaction.findAll({ where: { cardId: cardIds }, order: [['createdAt', 'DESC']], limit, offset }),
+  ]);
 
-    res.json({
-      totalSpent,
-      transactions
-    });
-
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  return res.json({ totalSpent: round2(totalSpent), transactions });
 };
-exports.getUserSpendings = async (req, res) => {
-  try {
 
-    const cards = await Card.findAll({
-      where: { userId: req.user.id },
-      attributes: ["id"]
-    });
+// ================= MONTHLY ANALYTICS =================
+// Aggregated in SQL (dialect-aware month bucketing) instead of in JS.
+exports.getSpendingAnalytics = async (req, res) => {
+  const cardIds = await ownedCardIds(req.user.id);
+  if (!cardIds.length) return res.json([]);
 
-    const cardIds = cards.map(c => c.id);
+  const month = monthExpression();
+  const rows = await CardTransaction.findAll({
+    attributes: [
+      [month, 'month'],
+      [fn('SUM', literal(`CASE WHEN "status" = 'approved' THEN "amount" ELSE 0 END`)), 'totalSpent'],
+      [fn('SUM', literal(`CASE WHEN "status" = 'approved' THEN 1 ELSE 0 END`)), 'totalTransactions'],
+      [fn('AVG', col('amount')), 'avgTransaction'],
+      [fn('SUM', literal('CASE WHEN "isFraud" THEN 1 ELSE 0 END')), 'fraudCount'],
+    ],
+    where: { cardId: cardIds },
+    group: [month],
+    order: [[month, 'ASC']],
+    raw: true,
+  });
 
-    const transactions = await CardTransaction.findAll({
-      where: { cardId: cardIds },
-      order: [['createdAt', 'DESC']]
-    });
-
-    const totalSpent = transactions.reduce(
-      (sum, t) => sum + Number(t.amount),
-      0
-    );
-
-    res.json({
-      totalSpent,
-      transactions
-    });
-
-  } catch (error) {
-    console.error("Spendings Error:", error);
-    res.status(500).json({ error: error.message });
-  }
+  return res.json(rows.map((r) => ({
+    month: r.month,
+    totalSpent: round2(r.totalSpent),
+    totalTransactions: toNumber(r.totalTransactions),
+    avgTransaction: round2(r.avgTransaction),
+    fraudCount: toNumber(r.fraudCount),
+  })));
 };
-exports.getCardById = async (req, res) => {
-  try {
-    const card = await Card.findOne({
-      where: {
-        id: req.params.id,
-        userId: req.user.id
-      }
-    });
 
-    if (!card) {
-      return res.status(404).json({ message: "Card not found" });
-    }
+// ================= MERCHANT / CATEGORY ANALYTICS =================
+exports.getCategoryAnalytics = async (req, res) => {
+  const { groupBy } = req.validated.query;
+  const cardIds = await ownedCardIds(req.user.id);
+  if (!cardIds.length) return res.json([]);
 
-    res.json(card);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  const rows = await CardTransaction.findAll({
+    attributes: [groupBy, [fn('SUM', col('amount')), 'totalSpent'], [fn('COUNT', col('id')), 'count']],
+    where: spendingWhere(cardIds),
+    group: [groupBy],
+    order: [[literal('"totalSpent"'), 'DESC']],
+    raw: true,
+  });
+
+  return res.json(rows.map((r) => ({ [groupBy]: r[groupBy], totalSpent: round2(r.totalSpent), count: toNumber(r.count) })));
 };

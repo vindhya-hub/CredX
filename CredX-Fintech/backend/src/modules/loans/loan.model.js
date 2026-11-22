@@ -1,5 +1,12 @@
 const { DataTypes } = require('sequelize');
 const { sequelize } = require('../../config/db');
+const { decimalGetter } = require('../../utils/money');
+
+const money = (field, extra = {}) => ({
+  type: DataTypes.DECIMAL(14, 2),
+  get: decimalGetter(field),
+  ...extra,
+});
 
 const Loan = sequelize.define('Loan', {
   id: {
@@ -11,10 +18,8 @@ const Loan = sequelize.define('Loan', {
     type: DataTypes.UUID,
     allowNull: false,
   },
-  amount: {
-    type: DataTypes.FLOAT,
-    allowNull: false,
-  },
+  // Principal disbursed to the wallet
+  amount: money('amount', { allowNull: false }),
   interestRate: {
     type: DataTypes.FLOAT,
     allowNull: false,
@@ -23,27 +28,18 @@ const Loan = sequelize.define('Loan', {
     type: DataTypes.INTEGER,
     allowNull: false,
   },
-  emi: {
-    type: DataTypes.FLOAT,
-    allowNull: false,
-  },
+  emi: money('emi', { allowNull: false }),
+  // approved (active, being repaid) -> closed
   status: {
     type: DataTypes.STRING,
-    defaultValue: 'pending'
-  }, // ✅ comma added here
-
-  remainingBalance: {
-    type: DataTypes.FLOAT,
-    allowNull: false,
+    defaultValue: 'pending',
   },
-
-  paidAmount: {
-    type: DataTypes.FLOAT,
-    defaultValue: 0,
-  }
-
+  // Amount still to be repaid (principal + interest for loans created by this version)
+  remainingBalance: money('remainingBalance', { allowNull: false }),
+  paidAmount: money('paidAmount', { defaultValue: 0 }),
 }, {
-  timestamps: true
+  timestamps: true,
+  indexes: [{ name: 'idx_loans_user_id', fields: ['userId'] }],
 });
 
 module.exports = Loan;

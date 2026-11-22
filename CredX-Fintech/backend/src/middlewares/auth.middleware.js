@@ -1,20 +1,28 @@
-const jwt = require('jsonwebtoken');
-require('dotenv').config();
+const { TokenExpiredError } = require('jsonwebtoken');
+const AppError = require('../utils/AppError');
+const { verifyAccessToken } = require('../modules/auth/token.service');
 
-module.exports = (req, res, next) => {
-  const authHeader = req.headers.authorization;
+/**
+ * Requires a valid access token: `Authorization: Bearer <token>`.
+ * Sets `req.user = { id, role }`. Expired tokens get code TOKEN_EXPIRED so
+ * the client knows to call POST /api/auth/refresh.
+ */
+module.exports = function authMiddleware(req, res, next) {
+  const header = req.headers.authorization || '';
+  const [scheme, token] = header.split(' ');
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: "No token provided" });
+  if (scheme !== 'Bearer' || !token) {
+    return next(AppError.unauthorized('No token provided', 'NO_TOKEN'));
   }
 
-  const token = authHeader.split(' ')[1];
-
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // contains id + role
-    next();
+    const payload = verifyAccessToken(token);
+    req.user = { id: payload.sub, role: payload.role };
+    return next();
   } catch (error) {
-    return res.status(401).json({ message: "Invalid token" });
+    if (error instanceof TokenExpiredError) {
+      return next(AppError.unauthorized('Access token expired', 'TOKEN_EXPIRED'));
+    }
+    return next(AppError.unauthorized('Invalid token', 'INVALID_TOKEN'));
   }
 };

@@ -1,6 +1,4 @@
-module.exports = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ message: "Admin access required" });
-  }
-  next();
-};
+const requireRole = require('./role.middleware');
+
+// Kept as a named middleware for the admin routes.
+module.exports = requireRole('admin');
