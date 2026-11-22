@@ -9,6 +9,7 @@ const { sequelize, connectDB } = require('./config/db');
 const { connectRedis, closeRedis } = require('./config/redis');
 const { prepareDatabase } = require('./db/migrations');
 const { createApp } = require('./app');
+const { getEmbeddingService } = require('./modules/assistant/embeddings');
 
 async function start() {
   for (const warning of config.assertConfig()) logger.warn(warning);
@@ -26,6 +27,12 @@ async function start() {
       rateLimitStore: redisClient ? 'redis' : 'memory',
     });
   });
+
+  if (config.assistant.warmup) {
+    // Loads the local embedding model in the background; the assistant uses
+    // the hashing fallback until (or unless) it is ready.
+    getEmbeddingService().warmup();
+  }
 
   let shuttingDown = false;
   const shutdown = (signal) => {

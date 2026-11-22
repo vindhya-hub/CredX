@@ -23,6 +23,8 @@ const transactionRoutes = require('./modules/transactions/transaction.routes');
 const loanRoutes = require('./modules/loans/loan.routes');
 const cardRoutes = require('./modules/cards/card.routes');
 const adminRoutes = require('./modules/admin/admin.routes');
+const assistantRoutes = require('./modules/assistant/assistant.routes');
+const { getEmbeddingService } = require('./modules/assistant/embeddings');
 
 /**
  * CORS allowlist. Requests without an Origin header (curl, server-to-server,
@@ -84,9 +86,11 @@ function createApp({ redisClient = null, rateLimit = {}, corsOrigins = config.co
     } catch {
       database = 'down';
     }
+    const embeddings = getEmbeddingService().status();
     res.status(database === 'up' ? 200 : 503).json({
       status: database === 'up' ? 'ok' : 'degraded',
       database,
+      embeddings: { provider: embeddings.provider, active: embeddings.active, state: embeddings.state },
       uptimeSeconds: Math.round(process.uptime()),
     });
   });
@@ -99,6 +103,7 @@ function createApp({ redisClient = null, rateLimit = {}, corsOrigins = config.co
   app.use('/api/loans', loanRoutes);
   app.use('/api/cards', cardRoutes);
   app.use('/api/admin', adminRoutes);
+  app.use('/api/assistant', assistantRoutes);
 
   app.get('/', (req, res) => {
     res.send('CredX Fintech API Running');
