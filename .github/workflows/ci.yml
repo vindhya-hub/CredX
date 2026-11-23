@@ -1,0 +1,83 @@
+name: CI
+
+# No repository secrets are needed: the backend tests generate throwaway
+# secrets in their setup file, and the Docker job generates its own below.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CredX-Fintech/backend
+    env:
+      # Never download onnxruntime's optional CUDA binaries.
+      ONNXRUNTIME_NODE_INSTALL: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: CredX-Fintech/backend/package-lock.json
+      # The optional local embedding runtime is not needed: tests use the
+      # deterministic hashing embedder and in-memory SQLite (no PostgreSQL).
+      - run: npm ci --omit=optional
+      - run: npm test -- --ci
+
+  frontend:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CredX-Fintech/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: CredX-Fintech/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  docker:
+    name: Compose config and image builds
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    defaults:
+      run:
+        working-directory: CredX-Fintech
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate throwaway compose secrets (used only for this run)
+        run: |
+          umask 077
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "JWT_SECRET=$(openssl rand -hex 48)"
+            echo "JWT_REFRESH_SECRET=$(openssl rand -hex 48)"
+          } > "$RUNNER_TEMP/compose.env"
+      - name: Compose refuses to start without secrets
+        run: |
+          if docker compose config --quiet 2>/dev/null; then
+            echo "docker-compose.yml accepted a configuration without secrets" >&2
+            exit 1
+          fi
+      - name: Validate docker-compose.yml
+        run: docker compose --env-file "$RUNNER_TEMP/compose.env" config --quiet
+      - name: Build images
+        run: docker compose --env-file "$RUNNER_TEMP/compose.env" build
