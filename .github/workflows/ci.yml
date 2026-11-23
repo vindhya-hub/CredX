@@ -32,9 +32,10 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: CredX-Fintech/backend/package-lock.json
-      # The optional local embedding runtime is not needed: tests use the
-      # deterministic hashing embedder and in-memory SQLite (no PostgreSQL).
-      - run: npm ci --omit=optional
+      # Plain `npm ci`: --omit=optional would also drop the platform binding
+      # of Jest's resolver (unrs-resolver). Tests use the deterministic hashing
+      # embedder and in-memory SQLite, so no model download or PostgreSQL.
+      - run: npm ci
       - run: npm test -- --ci
 
   frontend:
