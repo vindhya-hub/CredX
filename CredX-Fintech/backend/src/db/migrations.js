@@ -127,8 +127,18 @@ async function backfillCategories(sequelize) {
  * @param {import('sequelize').Sequelize} sequelize
  * @param {{ mode?: 'alter'|'safe'|'none' }} [options]
  */
-async function prepareDatabase(sequelize, { mode = 'alter' } = {}) {
-  if (mode === 'none') return;
+async function prepareDatabase(sequelize, { mode: requestedMode = 'alter' } = {}) {
+  if (requestedMode === 'none') return;
+
+  // SQLite (test suite only) has no real ALTER COLUMN: Sequelize rebuilds the
+  // table, and dropping the old one fires ON DELETE CASCADE, silently deleting
+  // child rows (a user's cards). Postgres alters in place, so only SQLite is
+  // downgraded to the additive "safe" mode.
+  let mode = requestedMode;
+  if (mode === 'alter' && sequelize.getDialect() === 'sqlite') {
+    logger.warn('DB_SYNC=alter is not safe on SQLite; using "safe" mode instead');
+    mode = 'safe';
+  }
 
   const tables = await listTables(sequelize.getQueryInterface());
   await scrubLegacyCardData(sequelize, tables);

@@ -123,22 +123,18 @@ describe('prepareDatabase modes', () => {
     expect((await qi().describeTable('Cards')).cardNumber).toBeDefined();
   });
 
-  test('"alter" upgrades the legacy schema as well', async () => {
+  test('"alter" upgrades the legacy schema without losing rows (SQLite runs it additively)', async () => {
     await createLegacySchema();
-    // SQLite has no real ALTER COLUMN: Sequelize rebuilds each table, which
-    // trips over foreign keys with existing rows. Postgres alters in place,
-    // so FK checks are paused here only to exercise the same code path.
-    await sequelize.query('PRAGMA foreign_keys = OFF');
-    try {
-      await prepareDatabase(sequelize, { mode: 'alter' });
-    } finally {
-      await sequelize.query('PRAGMA foreign_keys = ON');
-    }
+    // Sequelize's SQLite alter rebuilds tables; dropping "Users" would cascade-delete
+    // the cards. prepareDatabase therefore never runs a destructive alter on SQLite.
+    await prepareDatabase(sequelize, { mode: 'alter' });
+    await prepareDatabase(sequelize, { mode: 'alter' }); // e.g. the next boot
     const columns = await qi().describeTable('Cards');
     expect(columns.cardNumber).toBeUndefined();
     expect(columns.cvv).toBeUndefined();
     expect(columns.last4).toBeDefined();
-    const [card] = await sequelize.query('SELECT "last4", "brand" FROM "Cards"', { type: 'SELECT' });
-    expect(card).toEqual({ last4: '4242', brand: 'VISA' });
+    const cards = await sequelize.query('SELECT "userId", "last4", "brand" FROM "Cards"', { type: 'SELECT' });
+    expect(cards).toEqual([{ userId: ids.user, last4: '4242', brand: 'VISA' }]);
+    expect(await sequelize.query('SELECT "id" FROM "CardTransactions"', { type: 'SELECT' })).toHaveLength(2);
   });
 });
