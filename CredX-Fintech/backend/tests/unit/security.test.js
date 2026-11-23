@@ -52,7 +52,7 @@ describe('assertConfig', () => {
     cfg.db.password = undefined;
     cfg.db.host = undefined;
     expect(() => assertConfig(cfg)).toThrow(/DB_HOST is required[\s\S]*DB_PASSWORD is required/);
-    cfg.db.url = 'postgres://user:placeholder@db:5432/credx';
+    cfg.db.url = `postgres://credx:${secret()}@db:5432/credx`;
     expect(() => assertConfig(cfg)).not.toThrow();
   });
 

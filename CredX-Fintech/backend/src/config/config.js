@@ -61,6 +61,10 @@ const DEV_CORS_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
 const MIN_SECRET_LENGTH = 32;
 
+/** Values like "<your-postgres-password>" or "change-me" copied from .env.example. */
+const looksLikePlaceholder = (value) =>
+  typeof value === 'string' && /<[a-z0-9 _.-]+>|change[-_ ]?me|replace[-_ ]?me|placeholder|your[-_ ]?(secret|password)/i.test(value);
+
 const config = {
   env,
   isProd,
@@ -191,6 +195,16 @@ function assertConfig(cfg = config) {
   const { accessSecret, refreshSecret } = cfg.jwt;
 
   // --- secrets ---
+  const placeholders = [
+    ['JWT_SECRET', accessSecret],
+    ['JWT_REFRESH_SECRET', refreshSecret],
+    ['CARD_FINGERPRINT_SECRET', cfg.cardFingerprintSecret],
+    ['DB_USER', cfg.db.user],
+    ['DB_PASSWORD', cfg.db.password],
+    ['DATABASE_URL', cfg.db.url],
+  ].filter(([, value]) => looksLikePlaceholder(value));
+  for (const [key] of placeholders) problems.push(`${key} still has the placeholder value from .env.example`);
+
   if (!accessSecret) problems.push('JWT_SECRET is required');
   else if (accessSecret.length < MIN_SECRET_LENGTH) problems.push(`JWT_SECRET must be at least ${MIN_SECRET_LENGTH} characters`);
   if (!refreshSecret) problems.push('JWT_REFRESH_SECRET is required');
@@ -255,3 +269,4 @@ function assertConfig(cfg = config) {
 module.exports = config;
 module.exports.assertConfig = assertConfig;
 module.exports.MIN_SECRET_LENGTH = MIN_SECRET_LENGTH;
+module.exports.looksLikePlaceholder = looksLikePlaceholder;
