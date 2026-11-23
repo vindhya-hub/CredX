@@ -380,8 +380,12 @@ overlap but not meaning.
   columns and indexes. `none` leaves the schema to you.
 - Idempotent upgrades for databases created by earlier versions: stored card
   numbers and CVVs are converted to masked data and the columns are dropped;
-  legacy NOT NULL constraints on ledger sender/receiver are relaxed; old card
-  transactions get a category from the merchant name.
+  legacy NOT NULL constraints on ledger sender/receiver are relaxed; duplicate
+  `Users_email_key1, _key2, ...` constraints (the old `unique: true` plus
+  `alter` sync added one per boot) are dropped; old card transactions get a
+  category from the merchant name.
+- On SQLite (tests only) `alter` is downgraded to `safe`, because Sequelize's
+  SQLite table rebuild cascades deletes to child rows.
 - Money columns are `DECIMAL(14,2)`. Indexes back the hot queries: card
   transactions by card and date, ledger rows by sender/receiver and date,
   cards, wallets and loans by user, and a named unique index on e-mail.

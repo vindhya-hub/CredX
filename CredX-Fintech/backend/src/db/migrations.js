@@ -17,7 +17,9 @@
  *   2. Wallet ledger rows may now have no sender (deposits, loan
  *      disbursements) or no receiver (bill/EMI payments), so the legacy NOT
  *      NULL constraints on Transactions.senderId/receiverId are relaxed.
- *   3. Card transactions created before categories existed get a category
+ *   3. Duplicate UNIQUE constraints on Users.email left by sync({ alter })
+ *      in earlier versions are dropped (Postgres).
+ *   4. Card transactions created before categories existed get a category
  *      derived from the merchant name (used by analytics and the assistant).
  */
 const { DataTypes, QueryTypes } = require('sequelize');
@@ -106,6 +108,30 @@ async function relaxLegacyNotNull(sequelize, tables) {
   }
 }
 
+/**
+ * Earlier versions declared `email` as `unique: true` and booted with
+ * sync({ alter: true }); Sequelize's Postgres dialect then added another
+ * UNIQUE constraint on every boot (Users_email_key1, _key2, ...). Each one is
+ * a redundant index that slows writes. Keep Users_email_key, drop the copies.
+ */
+async function dropDuplicateEmailConstraints(sequelize, tables) {
+  if (sequelize.getDialect() !== 'postgres' || !tables.has('Users')) return;
+  const rows = await sequelize.query(
+    `SELECT conname FROM pg_constraint
+     WHERE conrelid = '"Users"'::regclass AND contype = 'u' AND conname ~ '^Users_email_key[0-9]+$'`,
+    { type: QueryTypes.SELECT },
+  );
+  const hasPrimary = await sequelize.query(
+    `SELECT 1 FROM pg_constraint WHERE conrelid = '"Users"'::regclass AND conname = 'Users_email_key'`,
+    { type: QueryTypes.SELECT },
+  );
+  if (!rows.length || !hasPrimary.length) return;
+  for (const { conname } of rows) {
+    await sequelize.query(`ALTER TABLE "Users" DROP CONSTRAINT "${conname.replace(/"/g, '')}"`);
+  }
+  logger.info('Schema upgrade: dropped duplicate unique constraints on Users.email', { count: rows.length });
+}
+
 async function backfillCategories(sequelize) {
   const rows = await sequelize.query(
     'SELECT DISTINCT "merchant" FROM "CardTransactions" WHERE "category" IS NULL',
@@ -143,6 +169,7 @@ async function prepareDatabase(sequelize, { mode: requestedMode = 'alter' } = {}
   const tables = await listTables(sequelize.getQueryInterface());
   await scrubLegacyCardData(sequelize, tables);
   await relaxLegacyNotNull(sequelize, tables);
+  await dropDuplicateEmailConstraints(sequelize, tables);
 
   if (mode === 'safe') {
     for (const model of Object.values(sequelize.models)) {
@@ -155,4 +182,4 @@ async function prepareDatabase(sequelize, { mode: requestedMode = 'alter' } = {}
   await backfillCategories(sequelize);
 }
 
-module.exports = { prepareDatabase, addMissingColumns, scrubLegacyCardData, relaxLegacyNotNull, backfillCategories };
+module.exports = { prepareDatabase, addMissingColumns, scrubLegacyCardData, relaxLegacyNotNull, dropDuplicateEmailConstraints, backfillCategories };
