@@ -234,7 +234,7 @@
 //   );
 // }
 import { useEffect, useState } from "react";
-import API from "../services/api";
+import API, { errorMessage } from "../services/api";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 
@@ -242,6 +242,7 @@ export default function Cards() {
   const navigate = useNavigate();
 
   const [cards, setCards] = useState([]);
+  const [version, setVersion] = useState(0);
   const [type, setType] = useState("debit");
   const [cardNumber, setCardNumber] = useState("");
   const [cvv, setCvv] = useState("");
@@ -251,13 +252,16 @@ export default function Cards() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetchCards();
-  }, []);
+    let active = true;
+    API.get("/cards").then((res) => {
+      if (active) setCards(res.data);
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [version]);
 
-  const fetchCards = async () => {
-    const res = await API.get("/cards");
-    setCards(res.data);
-  };
+  const fetchCards = () => setVersion((v) => v + 1);
 
   const detectCardCompany = (number) => {
     if (/^4/.test(number)) return "VISA";
@@ -291,8 +295,8 @@ export default function Cards() {
     if (cleanNumber.length !== 16)
       return alert("Card must be 16 digits");
 
-    if (cvv.length !== 3)
-      return alert("CVV must be 3 digits");
+    if (cvv.length < 3)
+      return alert("CVV must be 3 or 4 digits");
 
     setLoading(true);
 
@@ -312,7 +316,7 @@ export default function Cards() {
       setCardCompany("");
       fetchCards();
     } catch (err) {
-      alert(err.response?.data?.message || "Error");
+      alert(errorMessage(err, "Could not add the card"));
     }
 
     setLoading(false);
@@ -320,7 +324,11 @@ export default function Cards() {
 
   const deleteCard = async (id) => {
     if (!window.confirm("Delete this card?")) return;
-    await API.delete(`/cards/${id}`);
+    try {
+      await API.delete(`/cards/${id}`);
+    } catch (err) {
+      alert(errorMessage(err, "Could not delete the card"));
+    }
     fetchCards();
   };
 
@@ -394,7 +402,7 @@ export default function Cards() {
             type="password"
             value={cvv}
             onChange={(e) =>
-              setCvv(e.target.value.replace(/\D/g, "").slice(0, 3))
+              setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))
             }
             className="bg-black border border-gray-700 p-3 rounded-xl"
           />
@@ -412,9 +420,7 @@ export default function Cards() {
       {/* CARD LIST — ACTUAL SIZE FIX */}
       <div className="grid md:grid-cols-2 gap-10 justify-items-center">
         {cards.map((card) => {
-          const brand =
-            card.cardCompany ||
-            detectCardCompany(card.maskedNumber?.replace(/\*/g, "") || "");
+          const brand = card.brand || "CARD";
 
           return (
             <motion.div

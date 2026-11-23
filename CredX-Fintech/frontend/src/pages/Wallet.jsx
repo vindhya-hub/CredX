@@ -1,196 +1,70 @@
-// import { useEffect, useState } from "react";
-// import API from "../services/api";
-// import { motion } from "framer-motion";
-
-// export default function Wallet() {
-//   const [wallet, setWallet] = useState(null);
-//   const [email, setEmail] = useState("");
-//   const [amount, setAmount] = useState("");
-//   const [addAmount, setAddAmount] = useState("");
-//   const [cards, setCards] = useState([]);
-//   const [selectedCardId, setSelectedCardId] = useState("");
-
-//   useEffect(() => {
-//     fetchWallet();
-//     fetchCards();
-//   }, []);
-
-//   const fetchWallet = async () => {
-//     const res = await API.get("/wallet");
-//     setWallet(res.data);
-//   };
-
-//   const fetchCards = async () => {
-//     const res = await API.get("/cards");
-//     setCards(res.data);
-//     if (res.data.length > 0) {
-//       setSelectedCardId(res.data[0].id);
-//     }
-//   };
-
-//   const transfer = async () => {
-//     await API.post("/wallet/transfer", {
-//       email,
-//       amount: Number(amount)
-//     });
-//     setEmail("");
-//     setAmount("");
-//     fetchWallet();
-//   };
-
-//   const addMoney = async () => {
-//     await API.post("/wallet/add-money", {
-//       amount: Number(addAmount),
-//       cardId: selectedCardId
-//     });
-//     setAddAmount("");
-//     fetchWallet();
-//   };
-
-//   if (!wallet)
-//     return (
-//       <div className="flex items-center justify-center h-screen bg-black text-white">
-//         Loading...
-//       </div>
-//     );
-
-//   return (
-//     <motion.div
-//       initial={{ opacity: 0 }}
-//       animate={{ opacity: 1 }}
-//       className="px-12 py-10 min-h-screen bg-gradient-to-br from-black via-gray-900 to-black text-white"
-//     >
-//       <h1 className="text-3xl font-bold mb-8 executive-gold">
-//         Wallet
-//       </h1>
-
-//       {/* Balance Card */}
-//       <motion.div
-//         whileHover={{ scale: 1.03 }}
-//         className="bg-gradient-to-br from-gray-900 to-black p-6 rounded-2xl shadow-xl border border-gray-700 mb-10"
-//       >
-//         <p className="text-lg text-gray-400">Balance</p>
-//         <p className="text-3xl font-bold text-white">
-//           ₹ {wallet.balance}
-//         </p>
-//       </motion.div>
-
-//       {/* Add Money Section */}
-//       <div className="bg-gradient-to-br from-gray-900 to-black p-6 rounded-2xl shadow-xl border border-gray-700 mb-8">
-//         <h2 className="text-xl font-semibold mb-4 text-white">
-//           Add Money
-//         </h2>
-
-//         {/* Card Dropdown */}
-//         <select
-//           value={selectedCardId}
-//           onChange={(e) => setSelectedCardId(e.target.value)}
-//           className="bg-black border border-gray-600 p-3 w-full mb-4 rounded text-white"
-//         >
-//           {cards.map(card => (
-//             <option key={card.id} value={card.id}>
-//               {card.maskedNumber} ({card.cardType})
-//             </option>
-//           ))}
-//         </select>
-
-//         <input
-//           type="number"
-//           placeholder="Enter Amount"
-//           value={addAmount}
-//           onChange={(e) => setAddAmount(e.target.value)}
-//           className="bg-black border border-gray-600 p-3 w-full mb-4 rounded text-white"
-//         />
-
-//         <button
-//           onClick={addMoney}
-//           className="bg-gradient-to-r from-[#bfa34a] to-[#f0e2a0] text-black px-4 py-2 rounded-md hover:opacity-90 transition"
-//         >
-//           Add Money
-//         </button>
-//       </div>
-
-//       {/* Transfer Section */}
-//       <div className="bg-gradient-to-br from-gray-900 to-black p-6 rounded-2xl shadow-xl border border-gray-700">
-//         <h2 className="text-xl font-semibold mb-4 text-white">
-//           Transfer Money
-//         </h2>
-
-//         <input
-//           type="email"
-//           placeholder="Receiver Email"
-//           value={email}
-//           onChange={(e) => setEmail(e.target.value)}
-//           className="bg-black border border-gray-600 p-3 w-full mb-4 rounded text-white"
-//         />
-
-//         <input
-//           type="number"
-//           placeholder="Amount"
-//           value={amount}
-//           onChange={(e) => setAmount(e.target.value)}
-//           className="bg-black border border-gray-600 p-3 w-full mb-4 rounded text-white"
-//         />
-
-//         <button
-//           onClick={transfer}
-//           className="bg-gradient-to-r from-[#bfa34a] to-[#f0e2a0] text-black px-4 py-2 rounded-md hover:opacity-90 transition"
-//         >
-//           Transfer
-//         </button>
-//       </div>
-//     </motion.div>
-//   );
-// }
-
 import { useEffect, useState } from "react";
-import API from "../services/api";
+import API, { errorMessage } from "../services/api";
 import { motion } from "framer-motion";
+
+const money = (n) => `₹ ${Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const LEDGER_LABELS = {
+  transfer: "Transfer",
+  deposit: "Top-up",
+  loan_disbursement: "Loan disbursement",
+  emi_payment: "EMI payment",
+  card_payment: "Card bill payment",
+};
+
+const inputClass = "bg-black border border-gray-700 p-3 w-full rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-[#d4af37]";
+const buttonClass = "bg-gradient-to-r from-[#c6a84f] to-[#f1e3a1] text-black font-medium px-6 py-3 rounded-lg shadow-md hover:shadow-lg hover:scale-[1.02] transition-all duration-300 disabled:opacity-60";
 
 export default function Wallet() {
   const [wallet, setWallet] = useState(null);
+  const [cards, setCards] = useState([]);
+  const [history, setHistory] = useState([]);
   const [email, setEmail] = useState("");
   const [amount, setAmount] = useState("");
   const [addAmount, setAddAmount] = useState("");
-  const [cards, setCards] = useState([]);
-  const [selectedCardId, setSelectedCardId] = useState("");
+  const [source, setSource] = useState(""); // "" = simulated bank transfer, else a credit card id
+  const [version, setVersion] = useState(0);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetchWallet();
-    fetchCards();
-  }, []);
+    let active = true;
+    Promise.all([API.get("/wallet"), API.get("/cards"), API.get("/transactions/history?limit=10")])
+      .then(([walletRes, cardsRes, historyRes]) => {
+        if (!active) return;
+        setWallet(walletRes.data);
+        setCards(cardsRes.data);
+        setHistory(historyRes.data);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [version]);
 
-  const fetchWallet = async () => {
-    const res = await API.get("/wallet");
-    setWallet(res.data);
-  };
+  const reload = () => setVersion((v) => v + 1);
+  const creditCards = cards.filter((c) => c.cardType === "credit" && c.status === "active");
 
-  const fetchCards = async () => {
-    const res = await API.get("/cards");
-    setCards(res.data);
-    if (res.data.length > 0) {
-      setSelectedCardId(res.data[0].id);
+  const run = async (action, onDone) => {
+    setBusy(true);
+    try {
+      await action();
+      onDone();
+      reload();
+    } catch (err) {
+      alert(errorMessage(err));
+    } finally {
+      setBusy(false);
     }
   };
 
-  const transfer = async () => {
-    await API.post("/wallet/transfer", {
-      email,
-      amount: Number(amount)
+  const transfer = () =>
+    run(() => API.post("/transactions/transfer", { receiverEmail: email, amount: Number(amount) }), () => {
+      setEmail("");
+      setAmount("");
     });
-    setEmail("");
-    setAmount("");
-    fetchWallet();
-  };
 
-  const addMoney = async () => {
-    await API.post("/wallet/add-money", {
-      amount: Number(addAmount),
-      cardId: selectedCardId
-    });
-    setAddAmount("");
-    fetchWallet();
-  };
+  const addMoney = () =>
+    run(() => API.post("/wallet/add-money", { amount: Number(addAmount), ...(source && { cardId: source }) }), () => setAddAmount(""));
 
   if (!wallet)
     return (
@@ -205,91 +79,71 @@ export default function Wallet() {
       animate={{ opacity: 1 }}
       className="px-16 py-12 min-h-screen bg-gradient-to-br from-black via-gray-900 to-black text-white"
     >
-      {/* Header */}
       <h1 className="text-4xl font-semibold tracking-wide mb-12 bg-gradient-to-r from-[#d4af37] via-[#f5e6b2] to-[#bfa34a] bg-clip-text text-transparent">
         Wallet
       </h1>
 
-      {/* Balance Card */}
       <motion.div
         whileHover={{ scale: 1.015 }}
         transition={{ duration: 0.3 }}
         className="bg-gradient-to-br from-gray-900 to-black p-8 rounded-3xl shadow-2xl border border-gray-800 mb-12"
       >
-        <p className="text-sm uppercase tracking-widest text-gray-500 mb-2">
-          Current Balance
-        </p>
-        <p className="text-4xl font-light text-white tracking-wide">
-          ₹ {wallet.balance}
-        </p>
+        <p className="text-sm uppercase tracking-widest text-gray-500 mb-2">Current Balance</p>
+        <p className="text-4xl font-light text-white tracking-wide">{money(wallet.balance)}</p>
       </motion.div>
 
-      {/* Add Money */}
-      <div className="bg-gradient-to-br from-gray-900 to-black p-8 rounded-3xl shadow-xl border border-gray-800 mb-10">
-        <h2 className="text-lg font-medium mb-6 tracking-wide text-gray-200">
-          Add Funds
-        </h2>
+      <div className="grid lg:grid-cols-2 gap-10 mb-10">
+        <div className="bg-gradient-to-br from-gray-900 to-black p-8 rounded-3xl shadow-xl border border-gray-800">
+          <h2 className="text-lg font-medium mb-6 tracking-wide text-gray-200">Add Funds</h2>
+          <div className="space-y-5">
+            <select value={source} onChange={(e) => setSource(e.target.value)} className={inputClass}>
+              <option value="">Bank transfer (simulated)</option>
+              {creditCards.map((card) => (
+                <option key={card.id} value={card.id}>
+                  {card.maskedNumber} (credit, {money(card.availableCredit)} available)
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500">Debit cards draw from this wallet, so only credit cards can fund it.</p>
+            <input type="number" min="0" step="0.01" placeholder="Enter Amount" value={addAmount}
+              onChange={(e) => setAddAmount(e.target.value)} className={inputClass} />
+            <button onClick={addMoney} disabled={busy || !addAmount} className={buttonClass}>Add Money</button>
+          </div>
+        </div>
 
-        <div className="space-y-5">
-          <select
-            value={selectedCardId}
-            onChange={(e) => setSelectedCardId(e.target.value)}
-            className="bg-black border border-gray-700 p-3 w-full rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-[#d4af37]"
-          >
-            {cards.map(card => (
-              <option key={card.id} value={card.id}>
-                {card.maskedNumber} ({card.cardType})
-              </option>
-            ))}
-          </select>
-
-          <input
-            type="number"
-            placeholder="Enter Amount"
-            value={addAmount}
-            onChange={(e) => setAddAmount(e.target.value)}
-            className="bg-black border border-gray-700 p-3 w-full rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-[#d4af37]"
-          />
-
-          <button
-            onClick={addMoney}
-            className="bg-gradient-to-r from-[#c6a84f] to-[#f1e3a1] text-black font-medium px-6 py-3 rounded-lg shadow-md hover:shadow-lg hover:scale-[1.02] transition-all duration-300"
-          >
-            Add Money
-          </button>
+        <div className="bg-gradient-to-br from-gray-900 to-black p-8 rounded-3xl shadow-xl border border-gray-800">
+          <h2 className="text-lg font-medium mb-6 tracking-wide text-gray-200">Transfer Funds</h2>
+          <div className="space-y-5">
+            <input type="email" placeholder="Receiver Email" value={email}
+              onChange={(e) => setEmail(e.target.value)} className={inputClass} />
+            <input type="number" min="0" step="0.01" placeholder="Enter Amount" value={amount}
+              onChange={(e) => setAmount(e.target.value)} className={inputClass} />
+            <button onClick={transfer} disabled={busy || !email || !amount} className={buttonClass}>Transfer</button>
+          </div>
         </div>
       </div>
 
-      {/* Transfer Money */}
       <div className="bg-gradient-to-br from-gray-900 to-black p-8 rounded-3xl shadow-xl border border-gray-800">
-        <h2 className="text-lg font-medium mb-6 tracking-wide text-gray-200">
-          Transfer Funds
-        </h2>
-
-        <div className="space-y-5">
-          <input
-            type="email"
-            placeholder="Receiver Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="bg-black border border-gray-700 p-3 w-full rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-[#d4af37]"
-          />
-
-          <input
-            type="number"
-            placeholder="Enter Amount"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            className="bg-black border border-gray-700 p-3 w-full rounded-lg text-white focus:outline-none focus:ring-1 focus:ring-[#d4af37]"
-          />
-
-          <button
-            onClick={transfer}
-            className="bg-gradient-to-r from-[#c6a84f] to-[#f1e3a1] text-black font-medium px-6 py-3 rounded-lg shadow-md hover:shadow-lg hover:scale-[1.02] transition-all duration-300"
-          >
-            Transfer
-          </button>
-        </div>
+        <h2 className="text-lg font-medium mb-6 tracking-wide text-gray-200">Recent Activity</h2>
+        {history.length === 0 && <p className="text-gray-500">No wallet activity yet.</p>}
+        {history.map((tx) => {
+          const outgoing = tx.direction === "debit";
+          const other = outgoing ? tx.receiver : tx.sender;
+          return (
+            <div key={tx.id} className="flex justify-between border-b border-gray-800 py-4">
+              <div>
+                <p className="font-medium">
+                  {LEDGER_LABELS[tx.type] || tx.type}
+                  {tx.type === "transfer" && other ? ` ${outgoing ? "to" : "from"} ${other.name}` : ""}
+                </p>
+                <p className="text-sm text-gray-500">{new Date(tx.createdAt).toLocaleString()}{tx.description ? ` · ${tx.description}` : ""}</p>
+              </div>
+              <p className={`font-semibold ${outgoing ? "text-red-400" : "text-green-400"}`}>
+                {outgoing ? "−" : "+"}{money(tx.amount)}
+              </p>
+            </div>
+          );
+        })}
       </div>
     </motion.div>
   );

@@ -23,7 +23,14 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // ESLint 9's core rule does not see JSX member usage such as <motion.div>,
+      // so `motion` (framer-motion) is allowed alongside component names.
+      'no-unused-vars': ['error', { varsIgnorePattern: '^([A-Z_]|motion$)' }],
     },
+  },
+  {
+    // Build tooling runs in Node, not the browser.
+    files: ['*.config.js'],
+    languageOptions: { globals: globals.node },
   },
 ])

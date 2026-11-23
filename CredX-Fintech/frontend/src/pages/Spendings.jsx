@@ -6,13 +6,14 @@ export default function Spendings() {
   const [data, setData] = useState(null);
 
   useEffect(() => {
-    fetchSpendings();
+    let active = true;
+    API.get("/cards/spendings").then((res) => {
+      if (active) setData(res.data);
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
   }, []);
-
-  const fetchSpendings = async () => {
-    const res = await API.get("/cards/spendings");
-    setData(res.data);
-  };
 
   if (!data) return <div>Loading...</div>;
 

@@ -273,7 +273,7 @@
 //     </motion.div>
 //   );
 // }
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import API from "../services/api";
 import { motion } from "framer-motion";
 import {
@@ -303,33 +303,7 @@ export default function Dashboard() {
   const [selectedCardId, setSelectedCardId] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchDashboard();
-  }, []);
-
-  const fetchDashboard = async () => {
-    try {
-      const profile = await API.get("/auth/profile");
-      setUser(profile.data);
-
-      const cardsRes = await API.get("/cards");
-      setCards(cardsRes.data);
-
-      if (cardsRes.data.length === 0) return;
-
-      const primaryCard =
-        cardsRes.data.find(c => c.isPrimary) || cardsRes.data[0];
-
-      setSelectedCardId(primaryCard.id);
-      await loadCardTransactions(primaryCard.id);
-    } catch (err) {
-      console.error("Dashboard error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadCardTransactions = async (cardId) => {
+  const loadCardTransactions = useCallback(async (cardId) => {
     const txRes = await API.get(`/cards/${cardId}/transactions`);
     const txData = txRes.data;
 
@@ -378,7 +352,35 @@ export default function Dashboard() {
         value: merchantTotals[key]
       }))
     );
-  };
+  }, []);
+
+  const fetchDashboard = useCallback(async () => {
+    try {
+      const profile = await API.get("/auth/profile");
+      setUser(profile.data);
+
+      const cardsRes = await API.get("/cards");
+      setCards(cardsRes.data);
+
+      if (cardsRes.data.length === 0) return;
+
+      const primaryCard =
+        cardsRes.data.find(c => c.isPrimary) || cardsRes.data[0];
+
+      setSelectedCardId(primaryCard.id);
+      await loadCardTransactions(primaryCard.id);
+    } catch (err) {
+      console.error("Dashboard error:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [loadCardTransactions]);
+
+  useEffect(() => {
+    fetchDashboard();
+  }, [fetchDashboard]);
+
+
 
   if (loading)
     return (

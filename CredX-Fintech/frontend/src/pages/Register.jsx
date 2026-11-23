@@ -1,5 +1,5 @@
 import { useState } from "react";
-import API from "../services/api";
+import API, { errorMessage } from "../services/api";
 import { useNavigate } from "react-router-dom";
 
 export default function Register() {
@@ -12,9 +12,13 @@ export default function Register() {
   });
 
   const register = async () => {
-    await API.post("/auth/register", form);
-    alert("Registered successfully");
-    navigate("/login");
+    try {
+      await API.post("/auth/register", form);
+      alert("Registered successfully");
+      navigate("/login");
+    } catch (err) {
+      alert(errorMessage(err, "Registration failed"));
+    }
   };
 
   return (
@@ -38,7 +42,7 @@ export default function Register() {
 
         <input
           type="password"
-          placeholder="Password"
+          placeholder="Password (8+ chars, letters and numbers)"
           className="w-full mb-6 p-3 bg-black border border-gray-700 rounded text-white"
           onChange={(e) => setForm({...form, password: e.target.value})}
         />

@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import API from "../services/api";
+import { useLocation, useNavigate } from "react-router-dom";
+import API, { errorMessage, tokens } from "../services/api";
 import CredRollingCards from "../components/CredRollingCards";
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,17 +26,11 @@ export default function Login() {
         password,
       });
 
-      // Save tokens
-      localStorage.setItem("accessToken", res.data.accessToken);
-      if (res.data.refreshToken) {
-        localStorage.setItem("refreshToken", res.data.refreshToken);
-      }
-
-      navigate("/dashboard");
+      tokens.save(res.data);
+      navigate(location.state?.from || "/dashboard");
 
     } catch (err) {
-      console.error("Login error:", err);
-      alert(err.response?.data?.message || "Invalid credentials");
+      alert(errorMessage(err, "Invalid credentials"));
     } finally {
       setLoading(false);
     }

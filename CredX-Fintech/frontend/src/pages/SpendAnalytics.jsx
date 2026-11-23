@@ -14,13 +14,14 @@ export default function SpendAnalytics() {
   const [data, setData] = useState(null);
 
   useEffect(() => {
-    fetchData();
+    let active = true;
+    API.get("/cards/spendings").then((res) => {
+      if (active) setData(res.data);
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
   }, []);
-
-  const fetchData = async () => {
-    const res = await API.get("/cards/spendings");
-    setData(res.data);
-  };
 
   if (!data) return null;
 
